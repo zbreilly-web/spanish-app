@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Spanish Learning App</title>
+  <link rel="stylesheet" href="css/styles.css"/>
+  <meta name="theme-color" content="#0f172a"/>
+</head>
+<body>
+  <!-- Auth Screen -->
+  <div id="authScreen" class="hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
+      <h2>Manage Account</h2>
+      <button id="authBack">Back</button>
+    </div>
+
+    <form id="authForm">
+      <input id="email" type="email" placeholder="Email" required/>
+      <input id="password" type="password" placeholder="Password" required/>
+      <button type="submit">Sign In / Sign Up</button>
+    </form>
+    <!-- You can ignore Google sign-in during Live Server testing -->
+    <button id="googleBtn">Sign in with Google</button>
+    <button id="signOutBtn" style="display:none;">Sign out</button>
+    <div id="whoami"></div>
+    <hr/>
+  </div>
+
+  <!-- Home Screen -->
+  <div id="homeScreen">
+    <h1>Welcome</h1>
+    <button id="goFlashcards">Flashcards</button>
+    <button id="goPDFs">Read PDFs</button>
+    <button id="goLearnMode">Learn Mode</button>
+    <button id="goWordBank">Word Bank</button>
+    <button id="goAccount">Manage Account</button>
+  </div>
+
+  <!-- Flashcards Screen -->
+  <div id="flashcardScreen" class="hidden">
+    <select id="bookSelect"></select>
+    <select id="chapterSelect"></select>
+    <button id="startButton">Start</button>
+    <button id="shuffleButton">Shuffle</button>
+    <div class="card-buttons">
+      <button id="backButton">Previous</button>
+      <button id="nextButton">Next</button>
+      <button id="knowButton">I Know This</button>
+      <button id="speakButton">Toggle Speak</button>
+      <button id="autoplayStartButton">Autoplay</button>
+      <button id="autoplayStopButton" class="hidden">Stop</button>
+    </div>
+    <div id="card" class="hidden">
+      <h1 id="spanishWord"></h1>
+      <p id="englishTranslation"></p>
+    </div>
+    <button id="toggleBank">Word Bank</button>
+    <div id="wordBankPanel" class="hidden">
+      <ul id="wordBank"></ul>
+    </div>
+    <div id="progressSummary"></div>
+    <button id="flashcardsBack">Back</button>
+  </div>
+
+  <!-- PDF Reader Screen -->
+  <div id="pdfScreen" class="hidden">
+    <h2>PDF Reader</h2>
+    <div id="pdfContainer" class="border rounded p-4">
+      <div id="bookList"></div>
+      <div id="pdfViewer"></div>
+    </div>
+    <button id="pdfBack">Back</button>
+  </div>
+
+  <!-- Learn Mode Screen -->
+  <div id="learnModeScreen" class="hidden">
+    <h2>Learn Mode</h2>
+    <div id="quizContainer"></div>
+    <button id="learnModeBack">Back</button>
+  </div>
+
+  <!-- Word Bank Screen -->
+  <div id="wordBankScreen" class="hidden">
+    <h2>Word Bank</h2>
+    <div id="wordBankDisplay">
+      <ul id="wordBankList"></ul>
+    </div>
+    <button id="wordBankBack">Back</button>
+  </div>
+
+  <!-- Firebase (compat SDKs) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+  <!-- Firebase Init -->
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyBpvE1cCzjwmR9q-YsiCtQXc6PqKlMJBQc",
+      authDomain: "learn-verbatim.firebaseapp.com",
+      projectId: "learn-verbatim",
+      storageBucket: "learn-verbatim.firebasestorage.app",
+      messagingSenderId: "786188174122",
+      appId: "1:786188174122:web:4f2e2a046cfccce5e69453",
+      measurementId: "G-2LHHY47CVX"
+    };
+    firebase.initializeApp(firebaseConfig);
+    window.auth = firebase.auth();
+    window.db   = firebase.firestore();
+  </script>
+
+  <!-- Cloud <-> Local progress sync + namespacing -->
+  <script>
+    (function () {
+      const uid = () => (window.auth && auth.currentUser ? auth.currentUser.uid : "anon");
+      const knownKey = () => `knownWords::${uid()}`;
+      const lastIndexKey = (book, chap) => `lastIndex::${uid()}_${book}|${chap}`;
+
+      window.ProgressStore = {
+        loadKnown() {
+          try { return JSON.parse(localStorage.getItem(knownKey()) || "[]"); }
+          catch { return []; }
+        },
+        saveKnown(arr) {
+          localStorage.setItem(knownKey(), JSON.stringify(arr || []));
+        },
+        loadLastIndex(book, chap) {
+          const v = parseInt(localStorage.getItem(lastIndexKey(book, chap)), 10);
+          return isNaN(v) ? 0 : v;
+        },
+        saveLastIndex(book, chap, idx) {
+          localStorage.setItem(lastIndexKey(book, chap), String(idx || 0));
+        },
+        async refreshFromCloud(bookId, chapterId) {
+          const u = auth.currentUser;
+          if (!u || !bookId || !chapterId) return;
+
+          const ref = db.collection("users").doc(u.uid)
+                        .collection("progress").doc(bookId)
+                        .collection("chapters").doc(chapterId);
+
+          const snap = await ref.get();
+          const learned = snap.exists ? (snap.data().learned || []) : [];
+
+          const known = new Set(this.loadKnown());
+          learned.forEach(w => known.add(w));
+          this.saveKnown([...known]);
+
+          learned.forEach(w =>
+            localStorage.setItem(`learned_${bookId}_${chapterId}_${w}::${uid()}`, "true")
+          );
+
+          window.dispatchEvent(new CustomEvent("cloudProgressUpdated", {
+            detail: { bookId, chapterId, learned }
+          }));
+        }
+      };
+
+      auth.onAuthStateChanged(() => {
+        window.dispatchEvent(new Event("authChanged"));
+      });
+    })();
+  </script>
+
+  <!-- Progress save (drop-in) -->
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+
+      // Context
+      let _bookId = null, _chapterId = null, _spanish = null;
+      window.setAppContext = function (bookId, chapterId) { _bookId = bookId; _chapterId = chapterId; };
+      window.setCurrentSpanish = function (word) { _spanish = word; };
+
+      async function _saveToFirestore(bookId, chapterId, spanish) {
+        const user = auth.currentUser;
+        if (!user) { console.warn("Not signed in — local only"); return; }
+        const ref = db.collection("users").doc(user.uid)
+                      .collection("progress").doc(bookId)
+                      .collection("chapters").doc(chapterId);
+        await ref.set(
+          { learned: firebase.firestore.FieldValue.arrayUnion(spanish) },
+          { merge: true }
+        );
+        console.log("[OK] saved", { bookId, chapterId, spanish });
+      }
+
+      window.saveProgress = async function (bookId, chapterId, spanish) {
+        const b = bookId ?? _bookId, c = chapterId ?? _chapterId, w = spanish ?? _spanish;
+        if (!b || !c || !w) { console.warn("Missing context", { b, c, w }); return; }
+        const known = new Set(window.ProgressStore.loadKnown() || []);
+        known.add(w);
+        window.ProgressStore.saveKnown([...known]);
+
+        try { await _saveToFirestore(b, c, w); } catch (e) { console.error("[ERR] save", e); }
+        window.dispatchEvent(new Event('knownWordsChanged'));
+      };
+
+      document.addEventListener("DOMContentLoaded", () => {
+        const btn = $("knowButton");
+        if (btn) btn.addEventListener("click", () => window.saveProgress());
+      });
+
+      // One-time migration of any old per-word keys when user signs in
+      auth.onAuthStateChanged(async (u) => {
+        if (!u) return;
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          const m = /^learned_(.+?)_(.+?)_(.+)$/.exec(k);
+          if (!m || localStorage.getItem(k) !== "true") continue;
+          const [_, b, c, w] = m;
+          try {
+            const ref = db.collection("users").doc(u.uid)
+                          .collection("progress").doc(b)
+                          .collection("chapters").doc(c);
+            await ref.set(
+              { learned: firebase.firestore.FieldValue.arrayUnion(w) },
+              { merge: true }
+            );
+          } catch (e) { console.error("[ERR] migrate", e); }
+        }
+        console.log("[OK] migration");
+      });
+
+      window._testWrite = async () => {
+        const u = auth.currentUser; if (!u) throw new Error("Sign in first");
+        const ref = db.collection("users").doc(u.uid)
+                      .collection("progress").doc("TEST")
+                      .collection("chapters").doc("ONE");
+        await ref.set(
+          { ping: firebase.firestore.FieldValue.arrayUnion(Date.now()) },
+          { merge: true }
+        );
+        console.log("Test write OK");
+      };
+    })();
+  </script>
+
+  <!-- Auth UI + State (works even if Google sign-in unused locally) -->
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    $("authForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = $("email").value.trim();
+      const pass  = $("password").value;
+      try {
+        await auth.signInWithEmailAndPassword(email, pass).catch(async (err) => {
+          if (err.code === "auth/user-not-found") {
+            await auth.createUserWithEmailAndPassword(email, pass);
+          } else { throw err; }
+        });
+      } catch (err) {
+        if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password") {
+          if (confirm("Password is incorrect. Send a reset link?")) {
+            await auth.sendPasswordResetEmail(email);
+            alert("Password reset email sent.");
+          }
+        } else {
+          alert(err.message);
+        }
+      }
+    });
+
+    $("googleBtn").addEventListener("click", async () => {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      try { await auth.signInWithPopup(provider); }
+      catch (err) { alert(err.message); }
+    });
+
+    $("signOutBtn").addEventListener("click", () => auth.signOut());
+
+    auth.onAuthStateChanged((user) => {
+      if (user) {
+        $("whoami").textContent = `Signed in as ${user.email}`;
+        $("signOutBtn").style.display = "";
+        $("authForm").style.display = "none";
+        $("googleBtn").style.display = "none";
+      } else {
+        $("whoami").textContent = "";
+        $("signOutBtn").style.display = "none";
+        $("authForm").style.display = "";
+        $("googleBtn").style.display = "";
+      }
+    });
+  </script>
+
+  <!-- New shared modules -->
+  <script src="js/tts.js"></script>
+
+  <!-- Your App Scripts -->
+  <script src="js/router.js"></script>
+  <script src="js/flashcards.js"></script>
+  <script src="js/learnMode.js"></script>
+  <script src="js/pdfReader.js"></script>
+  <script src="js/wordBank.js"></script>
+</body>
+</html>
