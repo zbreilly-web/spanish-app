@@ -1,0 +1,53 @@
+﻿name: Deploy Preview to Firebase Hosting on PR
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build_and_preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Detect build script
+        id: detect
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.build ? 0 : 1)"; then
+              echo "has_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "has_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install deps
+        if: steps.detect.outputs.has_build == 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.detect.outputs.has_build == 'true'
+        run: npm run build
+
+      - name: Point firebase.json to output folder (dist > build > public > .)
+        run: |
+          node -e "const fs=require('fs'); let f=JSON.parse(fs.readFileSync('firebase.json','utf8')); const pick=(p)=>fs.existsSync(p)&&fs.lstatSync(p).isDirectory(); const dir=pick('dist')?'dist':(pick('build')?'build':(pick('public')?'public':f.hosting.public||'.')); f.hosting.public=dir; fs.writeFileSync('firebase.json', JSON.stringify(f,null,2)); console.log('Preview public dir:', dir);"
+
+      - name: Deploy Preview Channel
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_LEARN_VERBATIM }}'
+          projectId: learn-verbatim
